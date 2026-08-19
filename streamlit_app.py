@@ -274,21 +274,45 @@ with tab_predict:
     result = model_a if predict_model_choice.startswith("Model A") else model_b
     X_ref = result['X']
 
-    st.caption("Fill in the fields below (defaults are the dataset averages / most common category).")
-    input_data = {}
-    cols = st.columns(3)
-    for i, col_name in enumerate(X_ref.columns):
-        target_col = cols[i % 3]
+    N_TOP = 12
+    # Rank original (pre-encoding) columns by permutation importance so the
+    # quick form only asks about the features that actually move the
+    # prediction - showing all 23-38 raw fields at once overwhelms users.
+    ranked_features = result['perm_table'].sort_values('importance', ascending=False)['feature'].tolist()
+    top_features = ranked_features[:N_TOP]
+    remaining_features = [c for c in X_ref.columns if c not in top_features]
+
+    st.caption(f"Showing the top {N_TOP} most influential features for this model. "
+               f"The remaining {len(remaining_features)} are set to the dataset's typical "
+               f"(median/most-common) value - expand 'More options' below to adjust them too.")
+
+    def render_field(col_name, target):
         if col_name in result['numeric_features']:
             default = float(X_ref[col_name].median())
-            input_data[col_name] = target_col.number_input(col_name, value=default)
+            return target.number_input(col_name, value=default, key=f"{predict_model_choice}_{col_name}")
         else:
             options = sorted(X_ref[col_name].dropna().unique().tolist())
-            default_idx = 0
-            input_data[col_name] = target_col.selectbox(col_name, options, index=default_idx)
+            return target.selectbox(col_name, options, index=0, key=f"{predict_model_choice}_{col_name}")
+
+    input_data = {}
+    cols = st.columns(3)
+    for i, col_name in enumerate(top_features):
+        input_data[col_name] = render_field(col_name, cols[i % 3])
+
+    # Defaults for the fields not shown in the quick form
+    for col_name in remaining_features:
+        if col_name in result['numeric_features']:
+            input_data[col_name] = float(X_ref[col_name].median())
+        else:
+            input_data[col_name] = X_ref[col_name].mode()[0]
+
+    with st.expander(f"More options ({len(remaining_features)} additional features)"):
+        adv_cols = st.columns(3)
+        for i, col_name in enumerate(remaining_features):
+            input_data[col_name] = render_field(col_name, adv_cols[i % 3])
 
     if st.button("Predict satisfaction", type="primary"):
-        new_row = pd.DataFrame([input_data])
+        new_row = pd.DataFrame([input_data])[X_ref.columns]  # preserve original column order
         proba = result['pipeline'].predict_proba(new_row)[0, 1]
         label = "Satisfied 😊" if proba >= 0.5 else "Not satisfied 😟"
         st.success(f"**Prediction: {label}**")
